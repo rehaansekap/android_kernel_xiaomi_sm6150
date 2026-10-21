@@ -209,8 +209,19 @@ int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user 
 	}
 
 	if (magic2 == CHANGE_KSUVER) {
-		pr_info("sys_reboot: ksu_change_ksuver to: %d\n", cmd);
-		ksuver_override = cmd;
+		/*
+		 * Managers push their expected driver version code through this
+		 * supercall before anything else. Remember it as the fallback
+		 * identity (used by GET_INFO until the manager's base.apk
+		 * certificate is recognised) instead of overriding blindly every
+		 * time, so the reported triple stays consistent per manager.
+		 */
+		if (!ksu_manager_identity_known()) {
+			pr_info("sys_reboot: ksu_change_ksuver to: %d (fallback)\n", cmd);
+			ksu_set_fallback_version(cmd);
+		} else {
+			pr_info("sys_reboot: ignoring ksu_change_ksuver %d, manager already identified\n", cmd);
+		}
 
 		if (copy_to_user((void __user *)*arg, &reply, sizeof(reply) ))
 			return 0;

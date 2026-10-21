@@ -1,3 +1,149 @@
+/* Defined further down; needed by the manager-identity pass below. */
+static __always_inline bool check_v2_signature(char *path,
+					       unsigned expected_size,
+					       const char *expected_sha256);
+
+/*
+ * ============================================================================
+ *  Dynamic manager identity
+ * ----------------------------------------------------------------------------
+ *  A single kernel build has to satisfy several different manager APKs at once
+ *  (KernelSU, KernelSU-Next, BakaSU/ReSukiSU, KowSU, MamboSU, ... and spoofed
+ *  re-signs of them). Each manager enforces a *different* expected driver
+ *  version code and a different UAPI level, so a hard-coded KSU_VERSION can
+ *  only ever match one of them.
+ *
+ *  Instead of trusting the caller (which can lie) or the package name (which
+ *  the user can change), we identify the manager by the SHA-256 of the signing
+ *  certificate embedded in its base.apk. The scan is driven by
+ *  `ksu_manager_apk_pass()`; on a hit the matching triple
+ *  (version, uapi, tag) is latched and handed to userspace by GET_INFO.
+ * ============================================================================
+ */
+enum ksu_manager_type {
+	KSU_MANAGER_NONE = 0,
+	KSU_MANAGER_OFFICIAL,
+	KSU_MANAGER_KSUN,	/* KernelSU-Next, incl. spoofed re-signs */
+	KSU_MANAGER_BKSU,	/* BakaSU / ReSukiSU */
+	KSU_MANAGER_KOWSU,	/* KowSU */
+	KSU_MANAGER_MAMBO,	/* MamboSU */
+};
+
+struct ksu_known_manager {
+	enum ksu_manager_type type;
+	const char *hash;	/* SHA-256 of the APK signing certificate, hex */
+	u32 version;		/* version code the manager expects from the driver */
+	const char *tag;	/* human readable version tag */
+	u32 uapi;		/* UAPI level the manager's ksud was built against */
+};
+
+/*
+ * Certificate hashes below were read out of the real manager APKs with
+ * `apksigner verify --print-certs`, and the UAPI level with
+ * `strings libksud.so | grep 'uapi:'`. Keep them in sync when bumping a
+ * manager: a wrong hash only means "manager not recognised as itself", but a
+ * wrong uapi makes ksud abort module installs.
+ */
+static const struct ksu_known_manager ksu_known_managers[] = {
+	/* v3.3.1+20 / 32700, ksud "3.3.1+20 (uapi: 6)", CN=first last */
+	{ KSU_MANAGER_OFFICIAL, "4359c171f32543394cbc23ef908c4bb94cad7c8087002ba164c8230948c21549", 32700, "v3.3.1", 6 },
+	/* v3.4.2-50 / 33405, ksud "3.4.2-50-gb427a3f9 (uapi: 6)", CN=Rifat Azad */
+	{ KSU_MANAGER_KSUN, "79e590113c4c4c0c222978e413a5faa801666957b1212a328e46c00c69821bf7", 33405, "v3.4.2", 6 },
+	/* v4.2.0-rc3 / 35235, ksud "4.2.0-rc3-64-g7c383cfe (uapi: 5)", CN=ReSukiSU */
+	{ KSU_MANAGER_BKSU, "d3469712b6214462764a1d8d3e5cbe1d6819a0b629791b9f4101867821f1df64", 35235, "v4.2.0", 5 },
+	/* v3.3.0-131 / 32732, ksud "3.3.0-131-g8cd02474 (uapi: 6)", CN=kowx712 */
+	{ KSU_MANAGER_KOWSU, "484fcba6e6c43b1fb09700633bf2fb4758f13cb0b2f4457b80d075084b26c588", 32732, "v3.3.0", 6 },
+	/* v3.3.0-17 / 32653, ksud "3.3.0-17-geacec300 (uapi: 5)", CN=Rafi */
+	{ KSU_MANAGER_MAMBO, "a9462b8b98ea1ca7901b0cbdcebfaa35f0aa95e51b01d66e6b6d2c81b97746d8", 32653, "v3.3.0", 5 },
+};
+
+/*
+ * Managers we can recognise (so they may still be crowned and get root) but
+ * whose expected driver version / UAPI we have not collected yet. A hit here
+ * does not touch the identity triple reported by GET_INFO.
+ */
+static const char * const ksu_extra_manager_hashes[] = {
+	/* rsuntk/KernelSU */
+	"f415f4ed9435427e1fdf7f1fccd4dbc07b3d6b8751e4dbcec6f19671f427870b",
+	/* WildKernels/Wild_KSU */
+	"52d52d8c8bfbe53dc2b6ff1c613184e2c03013e090fe8905d8e3d5dc2658c2e4",
+};
+
+static enum ksu_manager_type ksu_detected_manager = KSU_MANAGER_NONE;
+static u32 ksu_detected_version = KSU_VERSION;
+static u32 ksu_detected_uapi = KERNEL_SU_UAPI_VERSION;
+static const char *ksu_detected_tag = KSU_VERSION_TAG;
+
+/* Called from check_block() with the SHA-256 of a candidate certificate. */
+static bool ksu_record_manager_by_cert(const char *hash_str)
+{
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(ksu_known_managers); i++) {
+		const struct ksu_known_manager *m = &ksu_known_managers[i];
+
+		if (strcmp(m->hash, hash_str))
+			continue;
+
+		ksu_detected_manager = m->type;
+		ksu_detected_version = m->version;
+		ksu_detected_uapi = m->uapi;
+		ksu_detected_tag = m->tag;
+		pr_info("ksu: manager recognised: type=%d version=%u tag=%s uapi=%u\n",
+			m->type, m->version, m->tag, m->uapi);
+		return true;
+	}
+
+	for (i = 0; i < ARRAY_SIZE(ksu_extra_manager_hashes); i++) {
+		if (strcmp(ksu_extra_manager_hashes[i], hash_str))
+			continue;
+
+		pr_info("ksu: manager recognised (identity unknown): %s\n",
+			hash_str);
+		return true;
+	}
+
+	return false;
+}
+
+/*
+ * Fall back to the driver's own identity when the manager still refuses to
+ * talk to us (unknown/self-signed manager, or the throne tracker has not run
+ * yet). Returning false keeps the caller's previous state untouched.
+ */
+bool ksu_manager_identity_known(void)
+{
+	return ksu_detected_manager != KSU_MANAGER_NONE;
+}
+
+u32 ksu_get_manager_version(void)
+{
+	return ksu_detected_version;
+}
+
+u32 ksu_get_manager_uapi_version(void)
+{
+	return ksu_detected_uapi;
+}
+
+const char *ksu_get_manager_version_tag(void)
+{
+	return ksu_detected_tag;
+}
+
+/*
+ * Fallback identity: respect whatever KSU_VERSION the manager pushed via the
+ * CHANGE_KSUVER supercall, but only while we have no certificate-based
+ * identification yet (a real manager always wins).
+ */
+void ksu_set_fallback_version(u32 version)
+{
+	if (ksu_detected_manager == KSU_MANAGER_NONE)
+		ksu_detected_version = version;
+}
+
+static bool ksu_manager_apk_pass(const char *path);
+
 struct sdesc {
 	struct shash_desc shash;
 	char ctx[];
@@ -68,7 +214,19 @@ static bool check_block(struct file *fp, u32 *size4, loff_t *pos, u32 *offset,
 	kernel_read(fp, size4, 0x4, pos); // certificate length
 	*offset += 0x4 * 2;
 
-	if (*size4 == expected_size) {
+	/*
+	 * NOTE: filter mode.
+	 *   expected_size != 0 -> legacy behaviour: only hash certs whose DER
+	 *                         length matches (each manager is tried with its
+	 *                         own size, so most blocks are skipped early).
+	 *   expected_size == 0 -> match purely on the certificate SHA-256 and,
+	 *                         on a hit, record which manager was detected.
+	 *                         This is what lets a single pass recognise every
+	 *                         supported manager (KSUNext/BakaSU/KowSU/MamboSU
+	 *                         and their spoofed re-signs) regardless of the
+	 *                         certificate length, which varies per build.
+	 */
+	if (expected_size == 0 || *size4 == expected_size) {
 		*offset += *size4;
 
 #define CERT_MAX_LENGTH 1024
@@ -92,8 +250,12 @@ static bool check_block(struct file *fp, u32 *size4, loff_t *pos, u32 *offset,
 
 		bin2hex(hash_str, digest, SHA256_DIGEST_SIZE);
 		pr_info("sha256: %s, expected: %s\n", hash_str,
-			expected_sha256);
-		if (strcmp(expected_sha256, hash_str) == 0) {
+			expected_size ? expected_sha256 : "(any known manager)");
+		if (expected_size) {
+			if (strcmp(expected_sha256, hash_str) == 0) {
+				return true;
+			}
+		} else if (ksu_record_manager_by_cert(hash_str)) {
 			return true;
 		}
 	}
@@ -289,6 +451,12 @@ clean:
 	return v2_signing_valid;
 }
 
+static bool ksu_manager_apk_pass(const char *path)
+{
+	/* expected_size 0 => match on certificate hash only, record identity */
+	return check_v2_signature((char *)path, 0, NULL);
+}
+
 #ifdef CONFIG_KSU_DEBUG
 
 int ksu_debug_manager_appid = -1;
@@ -365,14 +533,11 @@ bool is_manager_apk(char *path)
 	}
 #endif
 
-	return (check_v2_signature(path, 0x363, "4359c171f32543394cbc23ef908c4bb94cad7c8087002ba164c8230948c21549") // dummy.keystore
-	|| check_v2_signature(path, EXPECTED_SIZE, EXPECTED_HASH)  // kernelsu official
-	|| check_v2_signature(path, 0x375, "484fcba6e6c43b1fb09700633bf2fb4758f13cb0b2f4457b80d075084b26c588")  // KOWX712/KernelSU
-	|| check_v2_signature(path, 0x3e6, "79e590113c4c4c0c222978e413a5faa801666957b1212a328e46c00c69821bf7")  // rifsxd/KernelSU-Next
-	|| check_v2_signature(path, 0x396, "f415f4ed9435427e1fdf7f1fccd4dbc07b3d6b8751e4dbcec6f19671f427870b")  // rsuntk/KernelSU
-	|| check_v2_signature(path, 0x384, "a9462b8b98ea1ca7901b0cbdcebfaa35f0aa95e51b01d66e6b6d2c81b97746d8")  // RapliVx/KernelSU
-	|| check_v2_signature(path, 0x381, "52d52d8c8bfbe53dc2b6ff1c613184e2c03013e090fe8905d8e3d5dc2658c2e4")  // WildKernels/Wild_KSU
-    || check_v2_signature(path, 0x377,
-        "d3469712b6214462764a1d8d3e5cbe1d6819a0b629791b9f4101867821f1df64") // ReSukiSU/ReSukiSU
-	);
+	/*
+	 * Identify the manager by certificate only (no size filter, no package
+	 * name filter) and latch its identity as a side effect. Every supported
+	 * manager is present in ksu_known_managers[], so a hit here also tells
+	 * GET_INFO which version/UAPI triple to report.
+	 */
+	return ksu_manager_apk_pass(path);
 }

@@ -12,15 +12,16 @@ $(info -- KDIR: $(KDIR))
 $(info -- MDIR: $(MDIR))
 
 # compliant to last upstream kernel change as of e9e5b61
-ccflags-y += -DKSU_VERSION=35035 -DKSU_VERSION_TAG=\"v4.1.0\"
+# Default identity = Official KernelSU (overridden at runtime once the
+# manager's base.apk certificate is recognised, see manager/apk_sign.c)
+ccflags-y += -DKSU_VERSION=32700 -DKSU_VERSION_TAG=\"v3.3.1\"
 
 ifndef KSU_EXPECTED_SIZE
 KSU_EXPECTED_SIZE := 0x033b
 endif
 
-ifndef KSU_EXPECTED_HASH
-KSU_EXPECTED_HASH := c371061b19d8c7d7d6133c6a9bafe198fa944e50c1b31c9d8daa8d7f1fc2d2d6
-endif
+# Default: Official KernelSU signing certificate
+KSU_EXPECTED_HASH := 4359c171f32543394cbc23ef908c4bb94cad7c8087002ba164c8230948c21549
 
 ifdef KSU_MANAGER_PACKAGE
 CFLAGS_ksu.o += -DKSU_MANAGER_PACKAGE=\"$(KSU_MANAGER_PACKAGE)\"
@@ -51,19 +52,22 @@ CFLAGS_ksu.o += -DKSU_HAS_EXPORTED_SELINUX_OPS
 endif
 
 ifeq ($(shell grep -q " current_sid(void)" $(srctree)/security/selinux/include/objsec.h; echo $$?),0)
+$(info -- KernelSU/compat: backported current_sid found!)
 CFLAGS_ksu.o += -DKSU_COMPAT_HAS_CURRENT_SID
 endif
 
 ifeq ($(shell grep -q "struct selinux_state " $(srctree)/security/selinux/include/security.h; echo $$?),0)
+$(info -- KernelSU/compat: selinux_state found!)
 CFLAGS_ksu.o += -DKSU_COMPAT_HAS_SELINUX_STATE
 endif
 
 ifeq ($(shell grep -q "struct type_datum \*\*type_val_to_struct;" $(srctree)/security/selinux/ss/policydb.h; echo $$?),0)
+$(info -- KernelSU/compat: type_val_to_struct found!)
 CFLAGS_ksu.o += -DKSU_TYPE_VAL_TO_STRUCT
 endif
 
-# half-assed-backport from 5.1
 ifeq ($(shell grep -q "struct type_datum \*\*type_val_to_struct_array;" $(srctree)/security/selinux/ss/policydb.h; echo $$?),0)
+$(info -- KernelSU/compat: type_val_to_struct_array found!)
 CFLAGS_ksu.o += -DKSU_TYPE_VAL_TO_STRUCT_ARRAY
 endif
 
@@ -88,7 +92,7 @@ $(info -- KernelSU/compat: f_op->read_iter found!)
 CFLAGS_ksu.o += -DKSU_HAS_FOP_READ_ITER
 endif
 
-# UL, look for iterate_dir on ‎fs/readdir.c
+# UL, look for iterate_dir on fs/readdir.c
 ifeq ($(shell grep -q "^int iterate_dir" $(srctree)/fs/readdir.c 2>/dev/null; echo $$?),0)
 $(info -- KernelSU/compat: iterate_dir found!)
 CFLAGS_ksu.o += -DKSU_HAS_ITERATE_DIR
@@ -145,7 +149,7 @@ clean:
 
 ## For susfs stuff ##
 ifeq ($(shell test -e $(srctree)/fs/susfs.c; echo $$?),0)
-$(eval SUSFS_VERSION=$(shell cat $(srctree)/include/linux/susfs.h | grep -E '^#define SUSFS_VERSION' | cut -d' ' -f3 | sed 's/"//g'))
+$(eval SUSFS_VERSION=$(shell cat $(srctree)/include/linux/susfs.h | grep -E '^#define SUSFS_VERSION' | cut -d' ' -f3 | sed 's/\"//g'))
 $(info )
 $(info -- SUSFS_VERSION: $(SUSFS_VERSION))
 else

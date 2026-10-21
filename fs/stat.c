@@ -1,3 +1,5 @@
+#include <linux/susfs.h>
+#include <linux/susfs.h>
 // SPDX-License-Identifier: GPL-2.0
 /*
  *  linux/fs/stat.c
