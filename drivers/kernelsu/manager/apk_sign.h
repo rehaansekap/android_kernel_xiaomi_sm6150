@@ -17,5 +17,6 @@ void ksu_set_manager_type(enum ksu_manager_type type);
 u32 ksu_get_manager_version(void);
 const char *ksu_get_manager_version_tag(void);
 int get_pkg_from_apk_dir_path(char *pkg, const char *path);
+int get_pkg_from_apk_path(char *pkg, const char *path);
 
 #endif

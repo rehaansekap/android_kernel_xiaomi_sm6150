@@ -548,6 +548,16 @@ static int do_get_version_tag(void __user *arg)
 	return ksu_copy_to_user(arg, &cmd, sizeof(cmd), "get_version_tag");
 }
 
+static int do_get_full_version(void __user *arg)
+{
+	struct ksu_get_full_version_cmd cmd = { 0 };
+
+	snprintf(cmd.version_full, sizeof(cmd.version_full), "%s (%d)",
+		 ksu_get_manager_version_tag(), ksu_get_manager_version());
+
+	return ksu_copy_to_user(arg, &cmd, sizeof(cmd), "get_full_version");
+}
+
 static int do_nuke_ext4_sysfs(void __user *arg)
 {
 	struct ksu_nuke_ext4_sysfs_cmd cmd;
@@ -893,6 +903,7 @@ static const struct ksu_ioctl_cmd_map ksu_ioctl_handlers[] = {
 	{ .cmd = KSU_IOCTL_LOOKUP_SYMBOLS, .name = "LOOKUP_SYMBOLS", .handler = do_lookup_symbols, .perm_check = only_root },
 	{ .cmd = KSU_IOCTL_GET_HOOK_MODE, .name = "GET_HOOK_MODE", .handler = do_get_hook_mode, .perm_check = manager_or_root },
 	{ .cmd = KSU_IOCTL_GET_VERSION_TAG, .name = "GET_VERSION_TAG", .handler = do_get_version_tag, .perm_check = manager_or_root },
+	{ .cmd = KSU_IOCTL_GET_FULL_VERSION, .name = "GET_FULL_VERSION", .handler = do_get_full_version, .perm_check = manager_or_root },
 	{ .cmd = KSU_IOCTL_HOOK_TYPE, .name = "HOOK_TYPE", .handler = do_get_hook_type, .perm_check = manager_or_root },
 	{ .cmd = 0, .name = NULL, .handler = NULL, .perm_check = NULL } // Sentinel
 };

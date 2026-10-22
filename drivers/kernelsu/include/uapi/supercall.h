@@ -143,6 +143,10 @@ struct ksu_hook_type_cmd {
 	char hook_type[32];
 };
 
+struct ksu_get_full_version_cmd {
+	char version_full[255];
+};
+
 #define KSU_MARK_GET 1
 #define KSU_MARK_MARK 2
 #define KSU_MARK_UNMARK 3
@@ -214,6 +218,7 @@ struct ksu_lookup_symbols_cmd {
 /*version and hook */
 #define KSU_IOCTL_GET_HOOK_MODE _IOC(_IOC_READ, 'K', 98, 0)
 #define KSU_IOCTL_GET_VERSION_TAG _IOC(_IOC_READ, 'K', 99, 0)
+#define KSU_IOCTL_GET_FULL_VERSION _IOC(_IOC_READ, 'K', 100, 0)
 #define KSU_IOCTL_HOOK_TYPE _IOC(_IOC_READ, 'K', 101, 0)
 
 #endif
