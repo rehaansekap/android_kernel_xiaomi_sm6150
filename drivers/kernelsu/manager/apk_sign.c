@@ -1,149 +1,3 @@
-/* Defined further down; needed by the manager-identity pass below. */
-static __always_inline bool check_v2_signature(char *path,
-					       unsigned expected_size,
-					       const char *expected_sha256);
-
-/*
- * ============================================================================
- *  Dynamic manager identity
- * ----------------------------------------------------------------------------
- *  A single kernel build has to satisfy several different manager APKs at once
- *  (KernelSU, KernelSU-Next, BakaSU/ReSukiSU, KowSU, MamboSU, ... and spoofed
- *  re-signs of them). Each manager enforces a *different* expected driver
- *  version code and a different UAPI level, so a hard-coded KSU_VERSION can
- *  only ever match one of them.
- *
- *  Instead of trusting the caller (which can lie) or the package name (which
- *  the user can change), we identify the manager by the SHA-256 of the signing
- *  certificate embedded in its base.apk. The scan is driven by
- *  `ksu_manager_apk_pass()`; on a hit the matching triple
- *  (version, uapi, tag) is latched and handed to userspace by GET_INFO.
- * ============================================================================
- */
-enum ksu_manager_type {
-	KSU_MANAGER_NONE = 0,
-	KSU_MANAGER_OFFICIAL,
-	KSU_MANAGER_KSUN,	/* KernelSU-Next, incl. spoofed re-signs */
-	KSU_MANAGER_BKSU,	/* BakaSU / ReSukiSU */
-	KSU_MANAGER_KOWSU,	/* KowSU */
-	KSU_MANAGER_MAMBO,	/* MamboSU */
-};
-
-struct ksu_known_manager {
-	enum ksu_manager_type type;
-	const char *hash;	/* SHA-256 of the APK signing certificate, hex */
-	u32 version;		/* version code the manager expects from the driver */
-	const char *tag;	/* human readable version tag */
-	u32 uapi;		/* UAPI level the manager's ksud was built against */
-};
-
-/*
- * Certificate hashes below were read out of the real manager APKs with
- * `apksigner verify --print-certs`, and the UAPI level with
- * `strings libksud.so | grep 'uapi:'`. Keep them in sync when bumping a
- * manager: a wrong hash only means "manager not recognised as itself", but a
- * wrong uapi makes ksud abort module installs.
- */
-static const struct ksu_known_manager ksu_known_managers[] = {
-	/* v3.3.1+20 / 32700, ksud "3.3.1+20 (uapi: 6)", CN=first last */
-	{ KSU_MANAGER_OFFICIAL, "4359c171f32543394cbc23ef908c4bb94cad7c8087002ba164c8230948c21549", 32700, "v3.3.1", 6 },
-	/* v3.4.2-50 / 33405, ksud "3.4.2-50-gb427a3f9 (uapi: 6)", CN=Rifat Azad */
-	{ KSU_MANAGER_KSUN, "79e590113c4c4c0c222978e413a5faa801666957b1212a328e46c00c69821bf7", 33405, "v3.4.2", 6 },
-	/* v4.2.0-rc3 / 35235, ksud "4.2.0-rc3-64-g7c383cfe (uapi: 5)", CN=ReSukiSU */
-	{ KSU_MANAGER_BKSU, "d3469712b6214462764a1d8d3e5cbe1d6819a0b629791b9f4101867821f1df64", 35235, "v4.2.0", 5 },
-	/* v3.3.0-131 / 32732, ksud "3.3.0-131-g8cd02474 (uapi: 6)", CN=kowx712 */
-	{ KSU_MANAGER_KOWSU, "484fcba6e6c43b1fb09700633bf2fb4758f13cb0b2f4457b80d075084b26c588", 32732, "v3.3.0", 6 },
-	/* v3.3.0-17 / 32653, ksud "3.3.0-17-geacec300 (uapi: 5)", CN=Rafi */
-	{ KSU_MANAGER_MAMBO, "a9462b8b98ea1ca7901b0cbdcebfaa35f0aa95e51b01d66e6b6d2c81b97746d8", 32653, "v3.3.0", 5 },
-};
-
-/*
- * Managers we can recognise (so they may still be crowned and get root) but
- * whose expected driver version / UAPI we have not collected yet. A hit here
- * does not touch the identity triple reported by GET_INFO.
- */
-static const char * const ksu_extra_manager_hashes[] = {
-	/* rsuntk/KernelSU */
-	"f415f4ed9435427e1fdf7f1fccd4dbc07b3d6b8751e4dbcec6f19671f427870b",
-	/* WildKernels/Wild_KSU */
-	"52d52d8c8bfbe53dc2b6ff1c613184e2c03013e090fe8905d8e3d5dc2658c2e4",
-};
-
-static enum ksu_manager_type ksu_detected_manager = KSU_MANAGER_NONE;
-static u32 ksu_detected_version = KSU_VERSION;
-static u32 ksu_detected_uapi = KERNEL_SU_UAPI_VERSION;
-static const char *ksu_detected_tag = KSU_VERSION_TAG;
-
-/* Called from check_block() with the SHA-256 of a candidate certificate. */
-static bool ksu_record_manager_by_cert(const char *hash_str)
-{
-	int i;
-
-	for (i = 0; i < ARRAY_SIZE(ksu_known_managers); i++) {
-		const struct ksu_known_manager *m = &ksu_known_managers[i];
-
-		if (strcmp(m->hash, hash_str))
-			continue;
-
-		ksu_detected_manager = m->type;
-		ksu_detected_version = m->version;
-		ksu_detected_uapi = m->uapi;
-		ksu_detected_tag = m->tag;
-		pr_info("ksu: manager recognised: type=%d version=%u tag=%s uapi=%u\n",
-			m->type, m->version, m->tag, m->uapi);
-		return true;
-	}
-
-	for (i = 0; i < ARRAY_SIZE(ksu_extra_manager_hashes); i++) {
-		if (strcmp(ksu_extra_manager_hashes[i], hash_str))
-			continue;
-
-		pr_info("ksu: manager recognised (identity unknown): %s\n",
-			hash_str);
-		return true;
-	}
-
-	return false;
-}
-
-/*
- * Fall back to the driver's own identity when the manager still refuses to
- * talk to us (unknown/self-signed manager, or the throne tracker has not run
- * yet). Returning false keeps the caller's previous state untouched.
- */
-bool ksu_manager_identity_known(void)
-{
-	return ksu_detected_manager != KSU_MANAGER_NONE;
-}
-
-u32 ksu_get_manager_version(void)
-{
-	return ksu_detected_version;
-}
-
-u32 ksu_get_manager_uapi_version(void)
-{
-	return ksu_detected_uapi;
-}
-
-const char *ksu_get_manager_version_tag(void)
-{
-	return ksu_detected_tag;
-}
-
-/*
- * Fallback identity: respect whatever KSU_VERSION the manager pushed via the
- * CHANGE_KSUVER supercall, but only while we have no certificate-based
- * identification yet (a real manager always wins).
- */
-void ksu_set_fallback_version(u32 version)
-{
-	if (ksu_detected_manager == KSU_MANAGER_NONE)
-		ksu_detected_version = version;
-}
-
-static bool ksu_manager_apk_pass(const char *path);
-
 struct sdesc {
 	struct shash_desc shash;
 	char ctx[];
@@ -162,8 +16,7 @@ static struct sdesc *init_sdesc(struct crypto_shash *alg)
 	return sdesc;
 }
 
-static int calc_hash(struct crypto_shash *alg, const unsigned char *data,
-		     unsigned int datalen, unsigned char *digest)
+static int calc_hash(struct crypto_shash *alg, const unsigned char *data, unsigned int datalen, unsigned char *digest)
 {
 	struct sdesc *sdesc;
 	int ret;
@@ -179,8 +32,7 @@ static int calc_hash(struct crypto_shash *alg, const unsigned char *data,
 	return ret;
 }
 
-static int ksu_sha256(const unsigned char *data, unsigned int datalen,
-		      unsigned char *digest)
+static int ksu_sha256(const unsigned char *data, unsigned int datalen, unsigned char *digest)
 {
 	struct crypto_shash *alg;
 	char *hash_alg_name = "sha256";
@@ -196,139 +48,87 @@ static int ksu_sha256(const unsigned char *data, unsigned int datalen,
 	return ret;
 }
 
-static bool check_block(struct file *fp, u32 *size4, loff_t *pos, u32 *offset,
-			unsigned expected_size, const char *expected_sha256)
+static bool read_exact(struct file *fp, void *buffer, size_t size, loff_t *pos, loff_t end)
 {
-	kernel_read(fp, size4, 0x4, pos); // signer-sequence length
-	kernel_read(fp, size4, 0x4, pos); // signer length
-	kernel_read(fp, size4, 0x4, pos); // signed data length
+	if (*pos < 0 || *pos > end || size > (size_t)(end - *pos))
+		return false;
 
-	*offset += 0x4 * 3;
-
-	kernel_read(fp, size4, 0x4, pos); // digests-sequence length
-
-	*pos += *size4;
-	*offset += 0x4 + *size4;
-
-	kernel_read(fp, size4, 0x4, pos); // certificates length
-	kernel_read(fp, size4, 0x4, pos); // certificate length
-	*offset += 0x4 * 2;
-
-	/*
-	 * NOTE: filter mode.
-	 *   expected_size != 0 -> legacy behaviour: only hash certs whose DER
-	 *                         length matches (each manager is tried with its
-	 *                         own size, so most blocks are skipped early).
-	 *   expected_size == 0 -> match purely on the certificate SHA-256 and,
-	 *                         on a hit, record which manager was detected.
-	 *                         This is what lets a single pass recognise every
-	 *                         supported manager (KSUNext/BakaSU/KowSU/MamboSU
-	 *                         and their spoofed re-signs) regardless of the
-	 *                         certificate length, which varies per build.
-	 */
-	if (expected_size == 0 || *size4 == expected_size) {
-		*offset += *size4;
-
-#define CERT_MAX_LENGTH 1024
-		char *cert __attribute__((__cleanup__(ksu_kfree_byref))) = kzalloc(CERT_MAX_LENGTH, GFP_KERNEL);
-		if (!cert)
-			return false;
-
-		if (*size4 > CERT_MAX_LENGTH) {
-			pr_info("cert length overlimit\n");
-			return false;
-		}
-		kernel_read(fp, cert, *size4, pos);
-		unsigned char digest[SHA256_DIGEST_SIZE];
-		if (ksu_sha256(cert, *size4, digest) < 0 ) {
-			pr_info("sha256 error\n");
-			return false;
-		}
-
-		char hash_str[SHA256_DIGEST_SIZE * 2 + 1];
-		hash_str[SHA256_DIGEST_SIZE * 2] = '\0';
-
-		bin2hex(hash_str, digest, SHA256_DIGEST_SIZE);
-		pr_info("sha256: %s, expected: %s\n", hash_str,
-			expected_size ? expected_sha256 : "(any known manager)");
-		if (expected_size) {
-			if (strcmp(expected_sha256, hash_str) == 0) {
-				return true;
-			}
-		} else if (ksu_record_manager_by_cert(hash_str)) {
-			return true;
-		}
-	}
-	return false;
+	return kernel_read(fp, buffer, size, pos) == (ssize_t)size;
 }
 
-struct zip_entry_header {
-	uint32_t signature;
-	uint16_t version;
-	uint16_t flags;
-	uint16_t compression;
-	uint16_t mod_time;
-	uint16_t mod_date;
-	uint32_t crc32;
-	uint32_t compressed_size;
-	uint32_t uncompressed_size;
-	uint16_t file_name_length;
-	uint16_t extra_field_length;
-} __attribute__((packed));
-
-// This is a necessary but not sufficient condition, but it is enough for us
-static bool has_v1_signature_file(struct file *fp)
+static bool read_length_prefixed_end(struct file *fp, loff_t *pos, loff_t container_end, loff_t *value_end)
 {
-	struct zip_entry_header header;
-	const char MANIFEST[] = "META-INF/MANIFEST.MF";
+	u32 length;
 
-	loff_t pos = 0;
+	if (!read_exact(fp, &length, sizeof(length), pos, container_end))
+		return false;
+	if (length > INT_MAX || length > (u64)(container_end - *pos))
+		return false;
 
-	while (kernel_read(fp, &header,
-				      sizeof(struct zip_entry_header), &pos) ==
-	       sizeof(struct zip_entry_header)) {
-		if (header.signature != 0x04034b50) {
-			// ZIP magic: 'PK'
-			return false;
-		}
-		// Read the entry file name
-		if (header.file_name_length == sizeof(MANIFEST) - 1) {
-			char fileName[sizeof(MANIFEST)];
-			kernel_read(fp, fileName,
-					       header.file_name_length, &pos);
-			fileName[header.file_name_length] = '\0';
-
-			// Check if the entry matches META-INF/MANIFEST.MF
-			if (strncmp(MANIFEST, fileName, sizeof(MANIFEST) - 1) ==
-			    0) {
-				return true;
-			}
-		} else {
-			// Skip the entry file name
-			pos += header.file_name_length;
-		}
-
-		// Skip to the next entry
-		pos += header.extra_field_length + header.compressed_size;
-	}
-
-	return false;
+	*value_end = *pos + length;
+	return true;
 }
 
-static __always_inline bool check_v2_signature(char *path,
-					       unsigned expected_size,
-					       const char *expected_sha256)
+static bool check_block(struct file *fp, loff_t *pos, loff_t block_end, unsigned expected_size,
+						const char *expected_sha256)
 {
-	unsigned char buffer[0x11] = { 0 };
-	u32 size4;
-	u64 size8, size_of_block;
+	loff_t signers_end, signer_end, signed_data_end, digests_end, certificates_end;
+	u32 certificate_size;
 
-	loff_t pos;
+	// v2 block: signers sequence -> first signer -> signed data -> digests
+	if (!read_length_prefixed_end(fp, pos, block_end, &signers_end) ||
+		!read_length_prefixed_end(fp, pos, signers_end, &signer_end) ||
+		!read_length_prefixed_end(fp, pos, signer_end, &signed_data_end) ||
+		!read_length_prefixed_end(fp, pos, signed_data_end, &digests_end))
+		return false;
+
+	*pos = digests_end;
+	if (!read_length_prefixed_end(fp, pos, signed_data_end, &certificates_end) ||
+		!read_exact(fp, &certificate_size, sizeof(certificate_size), pos, certificates_end))
+		return false;
+
+	if (certificate_size > INT_MAX || certificate_size > (u64)(certificates_end - *pos))
+		return false;
+
+#define CERT_MAX_LENGTH 2048
+	if (certificate_size != expected_size)
+		return false;
+
+	if (certificate_size > CERT_MAX_LENGTH) {
+		pr_info("cert length overlimit\n");
+		return false;
+	}
+
+	char *memory __offstack(CERT_MAX_LENGTH + SHA256_DIGEST_SIZE + SHA256_DIGEST_SIZE * 2 + 1);
+	char *cert = memory;
+	if (!read_exact(fp, cert, certificate_size, pos, certificates_end))
+		return false;
+
+	unsigned char *digest = cert + CERT_MAX_LENGTH;
+	if (ksu_sha256(cert, certificate_size, digest)) {
+		pr_info("sha256 error\n");
+		return false;
+	}
+
+	char *hash_str = digest + SHA256_DIGEST_SIZE;
+	hash_str[SHA256_DIGEST_SIZE * 2] = '\0';
+
+	bin2hex(hash_str, digest, SHA256_DIGEST_SIZE);
+	pr_info("sha256: %s, expected: %s\n", hash_str, expected_sha256);
+	return strcmp(expected_sha256, hash_str) == 0;
+}
+
+static __always_inline bool check_v2_signature(char *path, unsigned expected_size, const char *expected_sha256)
+{
+	unsigned char buffer[0x10] = { 0 };
+	u32 cd_offset, cd_size;
+	u32 zip64_locator_magic;
+	u64 size_of_block, size_of_block_at_head;
+
+	loff_t pos, pairs_end, file_size, eocd_offset;
 
 	bool v2_signing_valid = false;
 	int v2_signing_blocks = 0;
-	bool v3_signing_exist = false;
-	bool v3_1_signing_exist = false;
 
 	int i;
 
@@ -349,24 +149,29 @@ static __always_inline bool check_v2_signature(char *path,
 
 	path_put(&kpath);
 
-	struct file *fp = filp_open(path, O_RDONLY, 0);
+	struct file *fp = ksu_filp_open_nonotify(path, O_RDONLY | O_NOATIME);
 	if (IS_ERR(fp)) {
-		// pr_err("open %s error.\n", path);
+		pr_err("open %s error.\n", path);
 		return false;
 	}
 
-	// disable inotify for this file
-	fp->f_mode |= FMODE_NONOTIFY;
+	file_size = vfs_llseek(fp, 0, SEEK_END);
+	if (file_size < 0)
+		goto clean;
 
 	// https://en.wikipedia.org/wiki/Zip_(file_format)#End_of_central_directory_record_(EOCD)
 	for (i = 0;; ++i) {
-		unsigned short n;
-		pos = vfs_llseek(fp, -i - 2, SEEK_END);
-		kernel_read(fp, &n, 2, &pos);
-		if (n == i) {
+		unsigned short comment_size;
+		u32 magic;
+		pos = file_size - i - 2;
+		if (!read_exact(fp, &comment_size, sizeof(comment_size), &pos, file_size))
+			goto clean;
+		if (comment_size == i) {
 			pos -= 22;
-			kernel_read(fp, &size4, 4, &pos);
-			if ((size4 ^ 0xcafebabeu) == 0xccfbf1eeu) {
+			if (!read_exact(fp, &magic, sizeof(magic), &pos, file_size))
+				goto clean;
+			if (magic == 0x06054b50) {
+				eocd_offset = pos - sizeof(magic);
 				break;
 			}
 		}
@@ -376,90 +181,98 @@ static __always_inline bool check_v2_signature(char *path,
 		}
 	}
 
-	pos += 12;
-	// offset
-	kernel_read(fp, &size4, 0x4, &pos);
-	pos = size4 - 0x18;
-
-	kernel_read(fp, &size8, 0x8, &pos);
-	kernel_read(fp, buffer, 0x10, &pos);
-	if (memcmp(buffer, "APK Sig Block 42", 16)) {
-		goto clean;
+	// reject ZIP64 before looking for a signing block
+	if (eocd_offset >= 20) {
+		pos = eocd_offset - 20;
+		if (!read_exact(fp, &zip64_locator_magic, sizeof(zip64_locator_magic), &pos, file_size))
+			goto clean;
+		if (zip64_locator_magic == 0x07064b50)
+			goto clean;
 	}
 
-	pos = size4 - (size8 + 0x8);
-	kernel_read(fp, &size_of_block, 0x8, &pos);
-	if (size_of_block != size8) {
+	pos = eocd_offset + 12;
+	// size of central directory
+	if (!read_exact(fp, &cd_size, sizeof(cd_size), &pos, file_size))
 		goto clean;
-	}
+	// offset of central directory
+	if (!read_exact(fp, &cd_offset, sizeof(cd_offset), &pos, file_size))
+		goto clean;
+	if ((u64)cd_offset > (u64)eocd_offset || (u64)cd_size != (u64)eocd_offset - cd_offset)
+		goto clean;
+	if (cd_offset < 0x20)
+		goto clean;
 
-	int loop_count = 0;
-	while (loop_count++ < 10) {
+	pairs_end = (loff_t)cd_offset - 0x18;
+	pos = pairs_end;
+
+	if (!read_exact(fp, &size_of_block, sizeof(size_of_block), &pos, cd_offset))
+		goto clean;
+	if (!read_exact(fp, buffer, sizeof(buffer), &pos, cd_offset))
+		goto clean;
+	if (memcmp((char *)buffer, "APK Sig Block 42", sizeof(buffer)))
+		goto clean;
+
+	if (size_of_block < 0x18 || size_of_block > INT_MAX - 0x8 || size_of_block > (u64)cd_offset - 0x8)
+		goto clean;
+
+	pos = (loff_t)cd_offset - (loff_t)size_of_block - 0x8;
+	if (!read_exact(fp, &size_of_block_at_head, sizeof(size_of_block_at_head), &pos, pairs_end))
+		goto clean;
+	if (size_of_block_at_head != size_of_block)
+		goto clean;
+
+	// Scan every length-prefixed pair, matching AOSP's signing block parser
+	// Each valid pair consumes an 8-byte length plus at least a 4-byte ID, so
+	// malformed entries fail below instead of spinning in place.
+	while (pos < pairs_end) {
 		uint32_t id;
-		uint32_t offset;
-		kernel_read(fp, &size8, 0x8, &pos); // sequence length
-		if (size8 == size_of_block) {
-			break;
-		}
-		kernel_read(fp, &id, 0x4, &pos); // id
-		offset = 4;
+		u64 size_of_pair;
+		loff_t pair_end;
+
+		if (!read_exact(fp, &size_of_pair, sizeof(size_of_pair), &pos, pairs_end))
+			goto invalid;
+		if (size_of_pair < sizeof(id) || size_of_pair > INT_MAX || size_of_pair > (u64)(pairs_end - pos))
+			goto invalid;
+
+		pair_end = pos + (loff_t)size_of_pair;
+		if (!read_exact(fp, &id, sizeof(id), &pos, pair_end))
+			goto invalid;
+
 		if (id == 0x7109871au) {
 			v2_signing_blocks++;
-			v2_signing_valid =
-				check_block(fp, &size4, &pos, &offset,
-					    expected_size, expected_sha256);
-		} else if (id == 0xf05368c0u) {
-			// http://aospxref.com/android-14.0.0_r2/xref/frameworks/base/core/java/android/util/apk/ApkSignatureSchemeV3Verifier.java#73
-			v3_signing_exist = true;
-		} else if (id == 0x1b93ad61u) {
-			// http://aospxref.com/android-14.0.0_r2/xref/frameworks/base/core/java/android/util/apk/ApkSignatureSchemeV3Verifier.java#74
-			v3_1_signing_exist = true;
-		} else {
+			v2_signing_valid = check_block(fp, &pos, pair_end, expected_size, expected_sha256);
+		} else if (id != 0x42726577u) { // APK verity padding
+			// https://cs.android.com/android/platform/superproject/+/android-latest-release:tools/apksig/src/main/java/com/android/apksig/internal/apk/ApkSigningBlockUtils.java;l=102;drc=ebe4dfd4fd6550c949a6c7c2427484bf5e96500b
 #ifdef CONFIG_KSU_DEBUG
-			pr_info("Unknown id: 0x%08x\n", id);
+			pr_info("Unexpected signature block id: 0x%08x\n", id);
 #endif
+			goto invalid;
 		}
-		pos += (size8 - offset);
+		pos = pair_end;
 	}
 
 	if (v2_signing_blocks != 1) {
 #ifdef CONFIG_KSU_DEBUG
-		pr_err("Unexpected v2 signature count: %d\n",
-		       v2_signing_blocks);
+		pr_err("Unexpected v2 signature count: %d\n", v2_signing_blocks);
 #endif
 		v2_signing_valid = false;
 	}
 
-	if (v2_signing_valid) {
-		int has_v1_signing = has_v1_signature_file(fp);
-		if (has_v1_signing) {
-			pr_err("Unexpected v1 signature scheme found!\n");
-			filp_close(fp, 0);
-			return false;
-		}
-	}
+	goto clean;
+
+invalid:
+	v2_signing_valid = false;
 clean:
 	filp_close(fp, 0);
 
-	if (v3_signing_exist || v3_1_signing_exist) {
-#ifdef CONFIG_KSU_DEBUG
-		pr_err("Unexpected v3 signature scheme found!\n");
-#endif
-		return false;
-	}
-
 	return v2_signing_valid;
-}
-
-static bool ksu_manager_apk_pass(const char *path)
-{
-	/* expected_size 0 => match on certificate hash only, record identity */
-	return check_v2_signature((char *)path, 0, NULL);
 }
 
 #ifdef CONFIG_KSU_DEBUG
 
 int ksu_debug_manager_appid = -1;
+
+#include "manager/manager_identity.h"
 
 static int set_expected_size(const char *val, const struct kernel_param *kp)
 {
@@ -474,70 +287,117 @@ static struct kernel_param_ops expected_size_ops = {
 	.get = param_get_uint,
 };
 
-module_param_cb(ksu_debug_manager_appid, &expected_size_ops,
-	&ksu_debug_manager_appid, S_IRUSR | S_IWUSR);
+module_param_cb(ksu_debug_manager_appid, &expected_size_ops, &ksu_debug_manager_appid, S_IRUSR | S_IWUSR);
 
 #endif
 
-int get_pkg_from_apk_path(char *pkg, const char *path)
+// /data/app/XXXXX/<PACKAGE_NAME>-YYY, which contains base.apk
+int get_pkg_from_apk_dir_path(char *pkg, const char *path)
 {
 	int len = strlen(path);
 	if (len >= KSU_MAX_PACKAGE_NAME || len < 1)
 		return -1;
 
-	const char *last_slash = NULL;
-	const char *second_last_slash = NULL;
-
-	int i;
-	for (i = len - 1; i >= 0; i--) {
-		if (path[i] == '/') {
-			if (!last_slash) {
-				last_slash = &path[i];
-			} else {
-				second_last_slash = &path[i];
-				break;
-			}
-		}
-	}
-
-	if (!last_slash || !second_last_slash)
+	const char *last_slash = strrchr(path, '/');
+	if (!last_slash)
 		return -1;
 
-	const char *last_hyphen = strchr(second_last_slash, '-');
-	if (!last_hyphen || last_hyphen > last_slash)
+	const char *last_hyphen = strchr(last_slash, '-');
+	if (!last_hyphen)
 		return -1;
 
-	int pkg_len = last_hyphen - second_last_slash - 1;
+	int pkg_len = last_hyphen - last_slash - 1;
 	if (pkg_len >= KSU_MAX_PACKAGE_NAME || pkg_len <= 0)
 		return -1;
 
 	// Copying the package name
-	memcpy(pkg, second_last_slash + 1, pkg_len);
+	memcpy(pkg, last_slash + 1, pkg_len);
 	pkg[pkg_len] = '\0';
 
 	return 0;
 }
 
+static enum ksu_manager_type detected_manager = KSU_MANAGER_UNKNOWN;
+
+enum ksu_manager_type ksu_detect_manager_apk(char *path)
+{
+	// dummy.keystore
+	if (check_v2_signature(path, 0x363, "4359c171f32543394cbc23ef908c4bb94cad7c8087002ba164c8230948c21549"))
+		return KSU_MANAGER_XXSU;
+
+	// kernelsu official
+	if (check_v2_signature(path, EXPECTED_SIZE, EXPECTED_HASH))
+		return KSU_MANAGER_XXSU;
+
+	// KOWX712/KernelSU
+	if (check_v2_signature(path, 0x375, "484fcba6e6c43b1fb09700633bf2fb4758f13cb0b2f4457b80d075084b26c588"))
+		return KSU_MANAGER_XXSU;
+
+	// midori01/KernelSU
+	if (check_v2_signature(path, 0x0368, "b9ee6759de4794f954883458b722b97ae6527cb7709a051db9a2348c0eea1e42"))
+		return KSU_MANAGER_XXSU;
+
+	// rifsxd/KernelSU-Next
+	if (check_v2_signature(path, 0x3e6, "79e590113c4c4c0c222978e413a5faa801666957b1212a328e46c00c69821bf7"))
+		return KSU_MANAGER_KSUN;
+
+	// RapliVx/KernelSU
+	if (check_v2_signature(path, 0x384, "a9462b8b98ea1ca7901b0cbdcebfaa35f0aa95e51b01d66e6b6d2c81b97746d8"))
+		return KSU_MANAGER_XXSU;
+
+	// Baka-SU/BakaSU
+    if (check_v2_signature(path, 0x377, "d3469712b6214462764a1d8d3e5cbe1d6819a0b629791b9f4101867821f1df64"))
+        return KSU_MANAGER_BKSU;
+        
+    // LyraVoid/FinaSU
+	if (check_v2_signature(path, 0x2cc, "2d89b50aaf1db013c2b6738f973f48b62ea21a3a8d7216bfec3521065d448458"))
+		return KSU_MANAGER_XXSU;
+		
+	// samakshkambxj/OriginSU
+    if (check_v2_signature(path, 0x51c, "d91ed440459ff575f9bbdb0b294f8d679b1591a37538aafcf1d0073da5dbe968"))
+        return KSU_MANAGER_BKSU;
+
+	return KSU_MANAGER_UNKNOWN;
+}
+
+#include "../include/ksu.h"
+
+void ksu_set_manager_type(enum ksu_manager_type type)
+{
+	WRITE_ONCE(detected_manager, type);
+}
+
+u32 ksu_get_manager_version(void)
+{
+	switch (READ_ONCE(detected_manager)) {
+	case KSU_MANAGER_KSUN:
+		return KSU_KSUN_VERSION;
+	case KSU_MANAGER_BKSU:
+		return KSU_BKSU_VERSION;
+	default:
+		return KERNEL_SU_VERSION;
+	}
+}
+
+const char *ksu_get_manager_version_tag(void)
+{
+	switch (READ_ONCE(detected_manager)) {
+	case KSU_MANAGER_KSUN:
+		return KSU_KSUN_TAG;
+	case KSU_MANAGER_BKSU:
+		return KSU_BKSU_TAG;
+	default:
+		return KERNEL_SU_VERSION_TAG;
+	}
+}
+
 bool is_manager_apk(char *path)
 {
-#ifdef KSU_MANAGER_PACKAGE
-	char pkg[KSU_MAX_PACKAGE_NAME];
-	if (get_pkg_from_apk_path(pkg, path) < 0) {
-		pr_err("Failed to get package name from apk path: %s\n", path);
-		return false;
-	}
+	enum ksu_manager_type type = ksu_detect_manager_apk(path);
 
-	// pkg is `<real package>`
-	if (strncmp(pkg, KSU_MANAGER_PACKAGE, sizeof(KSU_MANAGER_PACKAGE))) {
+	if (type == KSU_MANAGER_UNKNOWN)
 		return false;
-	}
-#endif
 
-	/*
-	 * Identify the manager by certificate only (no size filter, no package
-	 * name filter) and latch its identity as a side effect. Every supported
-	 * manager is present in ksu_known_managers[], so a hit here also tells
-	 * GET_INFO which version/UAPI triple to report.
-	 */
-	return ksu_manager_apk_pass(path);
+	ksu_set_manager_type(type);
+	return true;
 }
