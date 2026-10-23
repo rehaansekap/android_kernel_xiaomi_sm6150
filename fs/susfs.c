@@ -1332,7 +1332,7 @@ struct watch_dir {
 static struct fsnotify_group *g;
 
 static struct watch_dir g_watch = { .path = "/data/media/0", // we choose the underlying f2fs /data/media/0 instead of the FUSE /sdcard
-									.mask = (FS_EVENT_ON_CHILD | FS_ISDIR | FS_OPEN_PERM) };
+									.mask = (FS_EVENT_ON_CHILD | FS_ISDIR | FS_OPEN) };
 
 static int add_mark_on_inode(struct inode *inode, u32 mask,
 								struct fsnotify_mark **out);
@@ -1414,8 +1414,8 @@ static int susfs_handle_sdcard_inode_event(struct fsnotify_group *group,
 		return 0;
 
 	SUSFS_LOGI("'%s' detected, mask: 0x%x\n", SDCARD_ANDROID_PATH, mask);
-	SUSFS_LOGI("deferring cleanup for 5 seconds\n");
-	queue_delayed_work(system_unbound_wq, &sdcard_cleanup_dwork, 5 * HZ);
+	SUSFS_LOGI("triggering immediate cleanup\n");
+	queue_delayed_work(system_unbound_wq, &sdcard_cleanup_dwork, 0);
 	return 0;
 }
 
@@ -1459,6 +1459,16 @@ static int susfs_sdcard_monitor_fn(void *data)
 	if (!susfs_is_current_ksu_domain()) {
 		SUSFS_LOGE("domain is not ksu, exiting the thread\n");
 		return -EINVAL;
+	}
+
+	{
+		struct path android_path;
+		if (kern_path(SDCARD_ANDROID_PATH, LOOKUP_FOLLOW, &android_path) == 0) {
+			path_put(&android_path);
+			SUSFS_LOGI("'%s' is already decrypted and accessible, bypass fsnotify watch\n", SDCARD_ANDROID_PATH);
+			WRITE_ONCE(susfs_is_sdcard_android_data_decrypted, true);
+			return 0;
+		}
 	}
 
 	SUSFS_LOGI("start monitoring path '%s' using fsnotify\n",
