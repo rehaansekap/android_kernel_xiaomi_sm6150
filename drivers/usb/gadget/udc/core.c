@@ -692,7 +692,10 @@ int usb_gadget_connect(struct usb_gadget *gadget)
 {
 	int ret = 0;
 
-	if (!gadget->ops->pullup) {
+	if (!gadget)
+		return -EINVAL;
+
+	if (!gadget->ops || !gadget->ops->pullup) {
 		ret = -EOPNOTSUPP;
 		goto out;
 	}
@@ -731,7 +734,10 @@ int usb_gadget_disconnect(struct usb_gadget *gadget)
 {
 	int ret = 0;
 
-	if (!gadget->ops->pullup) {
+	if (!gadget)
+		return -EINVAL;
+
+	if (!gadget->ops || !gadget->ops->pullup) {
 		ret = -EOPNOTSUPP;
 		goto out;
 	}
@@ -771,6 +777,9 @@ int usb_gadget_deactivate(struct usb_gadget *gadget)
 {
 	int ret = 0;
 
+	if (!gadget)
+		return -EINVAL;
+
 	if (gadget->deactivated)
 		goto out;
 
@@ -806,6 +815,9 @@ EXPORT_SYMBOL_GPL(usb_gadget_deactivate);
 int usb_gadget_activate(struct usb_gadget *gadget)
 {
 	int ret = 0;
+
+	if (!gadget)
+		return -EINVAL;
 
 	if (!gadget->deactivated)
 		goto out;

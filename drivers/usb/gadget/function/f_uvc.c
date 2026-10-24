@@ -394,8 +394,14 @@ uvc_function_disable(struct usb_function *f)
 void
 uvc_function_connect(struct uvc_device *uvc)
 {
-	struct usb_composite_dev *cdev = uvc->func.config->cdev;
+	struct usb_composite_dev *cdev;
 	int ret;
+
+	if (!uvc->func.config || !uvc->func.config->cdev) {
+		pr_debug("UVC: skipping connect on unconfigured function\n");
+		return;
+	}
+	cdev = uvc->func.config->cdev;
 
 	if ((ret = usb_function_activate(&uvc->func)) < 0)
 		INFO(cdev, "UVC connect failed with %d\n", ret);
@@ -404,8 +410,14 @@ uvc_function_connect(struct uvc_device *uvc)
 void
 uvc_function_disconnect(struct uvc_device *uvc)
 {
-	struct usb_composite_dev *cdev = uvc->func.config->cdev;
+	struct usb_composite_dev *cdev;
 	int ret;
+
+	if (!uvc->func.config || !uvc->func.config->cdev) {
+		pr_debug("UVC: skipping disconnect on unbound function\n");
+		return;
+	}
+	cdev = uvc->func.config->cdev;
 
 	if ((ret = usb_function_deactivate(&uvc->func)) < 0)
 		INFO(cdev, "UVC disconnect failed with %d\n", ret);
@@ -875,6 +887,8 @@ static void uvc_unbind(struct usb_configuration *c, struct usb_function *f)
 	struct uvc_device *uvc = to_uvc(f);
 
 	INFO(cdev, "%s\n", __func__);
+
+	uvc->func.config = NULL;
 
 	video_unregister_device(&uvc->vdev);
 	v4l2_device_unregister(&uvc->v4l2_dev);

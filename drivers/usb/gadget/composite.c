@@ -397,14 +397,20 @@ EXPORT_SYMBOL_GPL(usb_remove_function);
  */
 int usb_function_deactivate(struct usb_function *function)
 {
-	struct usb_composite_dev	*cdev = function->config->cdev;
+	struct usb_composite_dev	*cdev;
 	unsigned long			flags;
 	int				status = 0;
 
+	if (!function || !function->config || !function->config->cdev)
+		return -EINVAL;
+
+	cdev = function->config->cdev;
 	spin_lock_irqsave(&cdev->lock, flags);
 
 	if (cdev->deactivations == 0) {
 		spin_unlock_irqrestore(&cdev->lock, flags);
+		if (!cdev->gadget)
+			return -ENODEV;
 		status = usb_gadget_deactivate(cdev->gadget);
 		spin_lock_irqsave(&cdev->lock, flags);
 	}
@@ -428,10 +434,14 @@ EXPORT_SYMBOL_GPL(usb_function_deactivate);
  */
 int usb_function_activate(struct usb_function *function)
 {
-	struct usb_composite_dev	*cdev = function->config->cdev;
+	struct usb_composite_dev	*cdev;
 	unsigned long			flags;
 	int				status = 0;
 
+	if (!function || !function->config || !function->config->cdev)
+		return -EINVAL;
+
+	cdev = function->config->cdev;
 	spin_lock_irqsave(&cdev->lock, flags);
 
 	if (WARN_ON(cdev->deactivations == 0))
@@ -440,6 +450,8 @@ int usb_function_activate(struct usb_function *function)
 		cdev->deactivations--;
 		if (cdev->deactivations == 0) {
 			spin_unlock_irqrestore(&cdev->lock, flags);
+			if (!cdev->gadget)
+				return -ENODEV;
 			status = usb_gadget_activate(cdev->gadget);
 			spin_lock_irqsave(&cdev->lock, flags);
 		}
