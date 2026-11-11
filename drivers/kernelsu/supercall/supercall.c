@@ -121,12 +121,6 @@ int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user 
             return 0;
         }
 #endif //#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
-#ifdef CONFIG_KSU_SUSFS_TRY_UMOUNT
-        if (cmd == CMD_SUSFS_ADD_TRY_UMOUNT) {
-            susfs_add_try_umount(arg);
-            return 0;
-        }
-#endif //#ifdef CONFIG_KSU_SUSFS_TRY_UMOUNT
 #ifdef CONFIG_KSU_SUSFS_SPOOF_UNAME
         if (cmd == CMD_SUSFS_SET_UNAME) {
             susfs_set_uname(arg);
@@ -157,6 +151,12 @@ int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user 
             return 0;
         }
 #endif // #ifdef CONFIG_KSU_SUSFS_SUS_MAP
+#ifdef CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER
+        if (cmd == CMD_SUSFS_SET_PRIORITY_UID_FILTER) {
+            susfs_set_priority_uid_filter(arg);
+            return 0;
+        }
+#endif // #ifdef CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER
         if (cmd == CMD_SUSFS_ENABLE_AVC_LOG_SPOOFING) {
             susfs_set_avc_log_spoofing(arg);
             return 0;

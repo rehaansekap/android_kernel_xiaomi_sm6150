@@ -60,11 +60,7 @@ out:
 }
 #endif
 
-#if !defined(CONFIG_KSU_SUSFS) || !defined(CONFIG_KSU_SUSFS_TRY_UMOUNT)
 static inline void try_umount(const char *mnt, int flags)
-#else
-void try_umount(const char *mnt, int flags)
-#endif
 {
 	struct path path;
 	int err = kern_path(mnt, 0, &path);
@@ -84,12 +80,10 @@ void try_umount(const char *mnt, int flags)
 	ksu_umount_mnt(&path, flags);
 #endif
 }
-#if !defined(CONFIG_KSU_SUSFS) || !defined(CONFIG_KSU_SUSFS_TRY_UMOUNT)
 static inline int ksu_handle_umount(struct cred *new, const struct cred *old)
 {
 	uid_t new_uid = ksu_get_uid_t(new->uid);
 	uid_t old_uid = ksu_get_uid_t(old->uid);
-#if defined(CONFIG_KSU_SUSFS) || !defined(CONFIG_KSU_SUSFS_TRY_UMOUNT)
 	// if there isn't any module mounted, just ignore it!
 	if (!ksu_kernel_umount_enabled)
 		return 0;
@@ -120,7 +114,6 @@ static inline int ksu_handle_umount(struct cred *new, const struct cred *old)
 		pr_info("handle umount ignore non zygote child: %d\n", current->pid);
 		return 0;
 	}
-#endif // #if defined(CONFIG_KSU_SUSFS) || !defined(CONFIG_KSU_SUSFS_TRY_UMOUNT)
 
 #ifdef CONFIG_KSU_HOSTSREDIRECT
 	set_thread_flag(TIF_KSU_UNMOUNTABLE);
@@ -142,7 +135,6 @@ static inline int ksu_handle_umount(struct cred *new, const struct cred *old)
 
 	return 0;
 }
-#endif // #if defined(CONFIG_KSU_SUSFS) || !defined(CONFIG_KSU_SUSFS_TRY_UMOUNT)
 
 void __init ksu_kernel_umount_init(void)
 {
