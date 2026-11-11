@@ -34,19 +34,19 @@ static void susfs_handle_setuid_tw_func(struct callback_head *cb)
 
 static void ksu_handle_extra_susfs_work(void)
 {
-    struct susfs_handle_setuid_tw *tw = kzalloc(sizeof(*tw), GFP_ATOMIC);
-    
+    struct susfs_handle_setuid_tw *tw;
+
     if (work_pending(&susfs_extra_works))
         return;
 
-    schedule_work(&susfs_extra_works);
-
+    tw = kzalloc(sizeof(*tw), GFP_ATOMIC);
     if (!tw) {
         pr_err("susfs: No enough memory\n");
         return;
     }
 
     tw->cb.func = susfs_handle_setuid_tw_func;
+    schedule_work(&susfs_extra_works);
 
     int err = task_work_add(current, &tw->cb, TWA_RESUME);
     if (err) {
@@ -54,9 +54,6 @@ static void ksu_handle_extra_susfs_work(void)
         pr_err("susfs: Failed adding task_work 'susfs_handle_setuid_tw', err: %d\n", err);
     }
 }
-#ifdef CONFIG_KSU_SUSFS_TRY_UMOUNT
-extern void susfs_try_umount(uid_t uid);
-#endif // #ifdef CONFIG_KSU_SUSFS_TRY_UMOUNT
 #endif // #ifdef CONFIG_KSU_SUSFS
 
 static __always_inline void ksu_handle_setresuid_cred(struct cred *new, const struct cred *old)
@@ -91,11 +88,7 @@ static __always_inline void ksu_handle_setresuid_cred(struct cred *new, const st
 	// Handle kernel umount
 do_umount:
     // Handle kernel umount
-#ifndef CONFIG_KSU_SUSFS_TRY_UMOUNT
     ksu_handle_umount(new, old);
-#else
-    susfs_try_umount(new_uid);
-#endif // #ifndef CONFIG_KSU_SUSFS_TRY_UMOUNT
 
 #ifdef CONFIG_KSU_SUSFS_SUS_PATH
     //susfs_run_sus_path_loop(new_uid);
