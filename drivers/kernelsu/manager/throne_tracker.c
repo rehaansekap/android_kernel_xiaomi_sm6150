@@ -93,8 +93,15 @@ struct my_dir_context {
 #define FILLDIR_ACTOR_STOP -EINVAL
 #endif
 
+// Pass kedua: kalau tidak ada manager yang cocok berdasarkan nama paket,
+// scan semua base.apk dan andalkan verifikasi tanda tangan.
+static bool scan_all_packages;
+
 static bool maybe_manager_apk_dir(const char *path)
 {
+	if (scan_all_packages)
+		return true;
+
 	_Static_assert(sizeof(KSU_PACKAGE_NAME) < KSU_MAX_PACKAGE_NAME, "KSU_PACKAGE_NAME too long!");
 	char pkg[KSU_MAX_PACKAGE_NAME];
 	if (get_pkg_from_apk_dir_path(pkg, path) < 0) {
@@ -160,7 +167,8 @@ static FILLDIR_RETURN_TYPE my_actor(MY_ACTOR_CTX_ARG, const char *name, int name
 	if (d_type == DT_REG && namelen == 8 && !memcmp(name, "base.apk", 8)) {
 		if (maybe_manager_apk_dir(my_ctx->parent_dir)) {
 			snprintf(candidate_path, DATA_PATH_LEN, "%s/%.*s", my_ctx->parent_dir, namelen, name);
-			strcpy(cached_manager_apk_path, candidate_path);
+			if (!scan_all_packages)
+				strcpy(cached_manager_apk_path, candidate_path);
 		}
 		// As soon as we met the base.apk, we can stop
 		return FILLDIR_ACTOR_STOP;
@@ -235,16 +243,17 @@ static noinline void search_manager(const char *path, int depth, struct list_hea
 			if (!candidate_path[0])
 				goto skip_iterate;
 
-			// As soon as we get the manager apk path, we can stop
-			stop = 1;
-
 			bool is_manager = is_manager_apk(candidate_path);
 			pr_info("Found manager base.apk at path: %s, is_manager: %d\n", candidate_path, is_manager);
 
 			// Only crown if signature verification pass
-			if (unlikely(!is_manager))
+			if (unlikely(!is_manager)) {
+				candidate_path[0] = 0;
 				goto skip_iterate;
+			}
 
+			// As soon as we get a verified manager apk, we can stop
+			stop = 1;
 			crown_manager(candidate_path, uid_data);
 
 		skip_iterate:
@@ -383,6 +392,12 @@ static void throne_tracker_fn(bool prune_only)
 		}
 		pr_info("Searching manager " KSU_PACKAGE_NAME "...\n");
 		search_manager("/data/app", 2, &uid_list);
+		if (ksu_manager_appid == KSU_INVALID_APPID) {
+			pr_info("No manager matched by package name, retrying with signature scan\n");
+			scan_all_packages = true;
+			search_manager("/data/app", 2, &uid_list);
+			scan_all_packages = false;
+		}
 		pr_info("Search manager finished\n");
 	}
 
