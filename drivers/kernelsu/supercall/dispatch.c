@@ -21,10 +21,8 @@ static int do_grant_root(void __user *arg)
 
 	pr_info("allow root for: %d\n", audit_uid);
 	ret = escape_with_root_profile();
-
-#ifdef CONFIG_KSU_FEATURE_SULOG
 	ksu_sulog_emit_grant_root(ret, audit_uid, audit_euid, GFP_KERNEL);
-#endif
+
 	return ret;
 }
 
@@ -34,6 +32,9 @@ static int do_get_info(void __user *arg)
 
 #ifdef MODULE
 	cmd.flags |= KSU_GET_INFO_FLAG_LKM;
+	if (ksu_late_loaded) {
+		cmd.flags |= KSU_GET_INFO_FLAG_LATE_LOAD;
+	}
 #endif
 
 	if (is_manager()) {
@@ -42,6 +43,12 @@ static int do_get_info(void __user *arg)
 #ifndef KSU_NO_PREINIT
 	cmd.flags |= KSU_GET_INFO_FLAG_PREINIT;
 #endif
+#ifdef CONFIG_KSU_HOOK_SUSFS_INLINE
+	cmd.flags |= KSU_GET_INFO_FLAG_HOOK_SUSFS_INLINE;
+#else
+	cmd.flags |= KSU_GET_INFO_FLAG_HOOK_TRACEPOINT;
+#endif
+	cmd.flags |= KSU_GET_INFO_FLAG_HOOK_READY;
 	cmd.features = KSU_FEATURE_MAX;
 	cmd.uapi_version = KERNEL_SU_UAPI_VERSION;
 
@@ -66,6 +73,12 @@ static int do_get_info_legacy(void __user *arg)
 	if (is_manager()) {
 		cmd.flags |= KSU_GET_INFO_FLAG_MANAGER;
 	}
+#ifdef CONFIG_KSU_HOOK_SUSFS_INLINE
+	cmd.flags |= KSU_GET_INFO_FLAG_HOOK_SUSFS_INLINE;
+#else
+	cmd.flags |= KSU_GET_INFO_FLAG_HOOK_TRACEPOINT;
+#endif
+	cmd.flags |= KSU_GET_INFO_FLAG_HOOK_READY;
 	cmd.features = KSU_FEATURE_MAX;
 
 	if (copy_to_user(arg, &cmd, sizeof(cmd))) {
@@ -511,6 +524,9 @@ static int ksu_copy_to_user(void __user *arg, const void *cmd,
 
 static const char *ksu_hook_type(void)
 {
+	// Keep the same hook label as the other managers.
+	if (ksu_get_manager_type() == KSU_MANAGER_SUKISU)
+		return "Manipulated";
 #ifdef CONFIG_KSU_KPROBES_KSUD
 	return "Kprobes";
 #elif defined(CONFIG_KSU_TAMPER_SYSCALL_TABLE) || \
@@ -552,10 +568,54 @@ static int do_get_full_version(void __user *arg)
 {
 	struct ksu_get_full_version_cmd cmd = { 0 };
 
-	snprintf(cmd.version_full, sizeof(cmd.version_full), "%s (%d)",
-		 ksu_get_manager_version_tag(), ksu_get_manager_version());
+	strscpy(cmd.version_full, ksu_get_manager_version_full(), sizeof(cmd.version_full));
 
 	return ksu_copy_to_user(arg, &cmd, sizeof(cmd), "get_full_version");
+}
+
+static int do_get_full_version_finasu(void __user *arg)
+{
+	struct ksu_get_full_version_cmd_legacy cmd = { 0 };
+
+	strscpy(cmd.version_full, ksu_get_manager_version_full(), sizeof(cmd.version_full));
+
+	return ksu_copy_to_user(arg, &cmd, sizeof(cmd), "get_full_version_finasu");
+}
+
+static int do_get_managers(void __user *arg)
+{
+	struct ksu_get_managers_cmd cmd;
+	struct ksu_manager_entry entry;
+	uid_t appid = ksu_get_manager_appid();
+	u16 total, count;
+
+	if (copy_from_user(&cmd, arg, sizeof(cmd))) {
+		pr_err("get_managers: copy_from_user failed\n");
+		return -EFAULT;
+	}
+
+	total = ksu_is_manager_appid_valid() ? 1 : 0;
+	count = cmd.count < total ? cmd.count : total;
+
+	if (count) {
+		entry.uid = (u32)appid;
+		entry.signature_index = 0;
+		if (copy_to_user((void __user *)((char __user *)arg + sizeof(cmd)),
+				 &entry, sizeof(entry))) {
+			pr_err("get_managers: copy_to_user managers failed\n");
+			return -EFAULT;
+		}
+	}
+
+	cmd.count = count;
+	cmd.total_count = total;
+
+	if (copy_to_user(arg, &cmd, sizeof(cmd))) {
+		pr_err("get_managers: copy_to_user failed\n");
+		return -EFAULT;
+	}
+
+	return 0;
 }
 
 static int do_nuke_ext4_sysfs(void __user *arg)
@@ -903,8 +963,10 @@ static const struct ksu_ioctl_cmd_map ksu_ioctl_handlers[] = {
 	{ .cmd = KSU_IOCTL_LOOKUP_SYMBOLS, .name = "LOOKUP_SYMBOLS", .handler = do_lookup_symbols, .perm_check = only_root },
 	{ .cmd = KSU_IOCTL_GET_HOOK_MODE, .name = "GET_HOOK_MODE", .handler = do_get_hook_mode, .perm_check = manager_or_root },
 	{ .cmd = KSU_IOCTL_GET_VERSION_TAG, .name = "GET_VERSION_TAG", .handler = do_get_version_tag, .perm_check = manager_or_root },
-	{ .cmd = KSU_IOCTL_GET_FULL_VERSION, .name = "GET_FULL_VERSION", .handler = do_get_full_version, .perm_check = manager_or_root },
 	{ .cmd = KSU_IOCTL_HOOK_TYPE, .name = "HOOK_TYPE", .handler = do_get_hook_type, .perm_check = manager_or_root },
+	{ .cmd = KSU_IOCTL_GET_FULL_VERSION, .name = "GET_FULL_VERSION", .handler = do_get_full_version, .perm_check = always_allow },
+	{ .cmd = KSU_IOCTL_GET_FULL_VERSION_FINASU, .name = "GET_FULL_VERSION_FINASU", .handler = do_get_full_version_finasu, .perm_check = always_allow },
+	{ .cmd = KSU_IOCTL_GET_MANAGERS, .name = "GET_MANAGERS", .handler = do_get_managers, .perm_check = manager_or_root },
 	{ .cmd = 0, .name = NULL, .handler = NULL, .perm_check = NULL } // Sentinel
 };
 
@@ -913,7 +975,7 @@ long ksu_supercall_handle_ioctl(const struct file *filp, unsigned int cmd, void 
 	int i;
 
 #ifdef CONFIG_KSU_DEBUG
-	pr_info("ksu ioctl: cmd=0x%x from uid=%d\n", cmd, current_uid().val);
+	pr_info_ratelimited("ksu ioctl: cmd=0x%x from uid=%d\n", cmd, current_uid().val);
 #endif
 
 	for (i = 0; ksu_ioctl_handlers[i].handler; i++) {
@@ -921,7 +983,7 @@ long ksu_supercall_handle_ioctl(const struct file *filp, unsigned int cmd, void 
 			// Check permission first
 			if (ksu_ioctl_handlers[i].perm_check && !ksu_ioctl_handlers[i].perm_check() &&
 				!(ksu_ioctl_handlers[i].allow_su_session && ksu_is_su_session_fd(filp))) {
-				pr_warn("ksu ioctl: permission denied for cmd=0x%x uid=%d\n", cmd, current_uid().val);
+				pr_warn_ratelimited("ksu ioctl: permission denied for cmd=0x%x uid=%d\n", cmd, current_uid().val);
 				return -EPERM;
 			}
 			// Execute handler
@@ -929,7 +991,7 @@ long ksu_supercall_handle_ioctl(const struct file *filp, unsigned int cmd, void 
 		}
 	}
 
-	pr_warn("ksu ioctl: unsupported command 0x%x\n", cmd);
+	pr_warn_ratelimited("ksu ioctl: unsupported command 0x%x\n", cmd);
 	return -ENOTTY;
 }
 
