@@ -6,6 +6,10 @@ uid_t ksu_manager_appid = KSU_INVALID_APPID;
 
 static char cached_manager_apk_path[DATA_PATH_LEN];
 
+// Pass kedua: cari manager berdasarkan tanda tangan, hanya untuk paket
+// yang namanya tidak dikenal (versi spoofed/obfuscated).
+static bool scan_all_packages;
+
 // extendable manager support
 // Match the package name exactly, or a debug/PR suffix such as `.dev`/`.pr123`.
 #define extra_manager_apk(tgt, name) ({			\
@@ -44,6 +48,25 @@ static void crown_manager(const char *apk, struct list_head *uid_data)
 	struct list_head *list = (struct list_head *)uid_data;
 	struct uid_data *np;
 	char pkg[KSU_MAX_PACKAGE_NAME];
+
+	// Pass kedua: hanya crown paket yang namanya TIDAK dikenal, yaitu build
+	// manager yang sengaja di-spoof. Nama yang dikenal sudah ditangani pass 1.
+	if (scan_all_packages) {
+		if (!apk || get_pkg_from_apk_path(pkg, apk) < 0)
+			return;
+		if (test_extra_pkgs(pkg) ||
+		    strncmp(pkg, KSU_PACKAGE_NAME, sizeof(KSU_PACKAGE_NAME) - 1) == 0)
+			return;
+		list_for_each_entry (np, list, list) {
+			if (strncmp(np->package, pkg, KSU_MAX_PACKAGE_NAME) == 0) {
+				pr_info("Crowning spoofed manager: %s, uid=%d\n", pkg, np->uid);
+				ksu_set_manager_appid(np->uid);
+				strscpy(cached_manager_apk_path, apk, DATA_PATH_LEN);
+				return;
+			}
+		}
+		return;
+	}
 
 	// Signature-first: derive the package from the APK path so a spoofed or
 	// obfuscated manager directory still matches an entry in packages.list.
@@ -92,10 +115,6 @@ struct my_dir_context {
 #define FILLDIR_ACTOR_CONTINUE 0
 #define FILLDIR_ACTOR_STOP -EINVAL
 #endif
-
-// Pass kedua: kalau tidak ada manager yang cocok berdasarkan nama paket,
-// scan semua base.apk dan andalkan verifikasi tanda tangan.
-static bool scan_all_packages;
 
 static bool maybe_manager_apk_dir(const char *path)
 {
@@ -359,8 +378,8 @@ static void throne_tracker_fn(bool prune_only)
 		if (ksu_is_manager_appid_valid()) {
 			pr_info("manager is uninstalled, invalidate it!\n");
 			ksu_invalidate_manager_uid();
-			goto prune;
 		}
+		need_rescan = true;
 	} else {
 		if (!ksu_is_manager_appid_valid()) {
 			need_rescan = true;
@@ -392,12 +411,10 @@ static void throne_tracker_fn(bool prune_only)
 		}
 		pr_info("Searching manager " KSU_PACKAGE_NAME "...\n");
 		search_manager("/data/app", 2, &uid_list);
-		if (ksu_manager_appid == KSU_INVALID_APPID) {
-			pr_info("No manager matched by package name, retrying with signature scan\n");
-			scan_all_packages = true;
-			search_manager("/data/app", 2, &uid_list);
-			scan_all_packages = false;
-		}
+		pr_info("Retrying with signature scan for spoofed managers\n");
+		scan_all_packages = true;
+		search_manager("/data/app", 2, &uid_list);
+		scan_all_packages = false;
 		pr_info("Search manager finished\n");
 	}
 
