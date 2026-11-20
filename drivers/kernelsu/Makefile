@@ -1,6 +1,7 @@
 # NOTE: unity build. single unit.
 
-obj-$(CONFIG_KSU) := ksu.o
+obj-$(CONFIG_KSU) := kernelsu.o
+kernelsu-y := ksu.o
 
 CFLAGS_ksu.o += -I$(srctree)/security/selinux -I$(srctree)/security/selinux/include
 CFLAGS_ksu.o += -I$(objtree)/security/selinux
@@ -11,24 +12,72 @@ MDIR := $(realpath $(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
 $(info -- KDIR: $(KDIR))
 $(info -- MDIR: $(MDIR))
 
-# compliant to last upstream kernel change as of 469c428
-KSU_VERSION := 32700
+# compliant to last upstream kernel change as of f49be69
+# Base version = KernelSU official. Downstream versions are derived from it
+# with an offset, so bumping KSU_VERSION moves every manager together.
+# Change an individual *_OFFSET only if one fork needs a different bump.
+KSU_VERSION := 32737
 KSU_VERSION_TAG := v3.3.1
+KSU_VERSION_FULL := $(KSU_VERSION_TAG)-$(KSU_VERSION)
+
+KSU_KSUN_OFFSET := 659
+KSU_BKSU_OFFSET := 2475
+KSU_KAZESU_OFFSET := 2308
+KSU_FINASU_OFFSET := 450
+KSU_SUKISU_OFFSET := 2263
+
+# KernelSU-Next
+KSU_KSUN_VERSION := $(shell echo $$(($(KSU_VERSION) + $(KSU_KSUN_OFFSET))))
 KSU_KSUN_TAG := v3.4.2
+KSU_KSUN_VERSION_FULL := $(KSU_KSUN_TAG)-$(KSU_KSUN_VERSION)
+
+# BakaSU
+KSU_BKSU_VERSION := $(shell echo $$(($(KSU_VERSION) + $(KSU_BKSU_OFFSET))))
 KSU_BKSU_TAG := v4.2.0
-KSU_KSUN_VERSION := $(shell echo $$(($(KSU_VERSION) + 705)))
-KSU_BKSU_VERSION := $(shell echo $$(($(KSU_VERSION) + 2536)))
+KSU_BKSU_VERSION_FULL := $(KSU_BKSU_TAG)-$(KSU_BKSU_VERSION)-backslashxx
+
+# KAZESU
+KSU_KAZESU_VERSION := $(shell echo $$(($(KSU_VERSION) + $(KSU_KAZESU_OFFSET))))
+KSU_KAZESU_TAG := v1.0.0
+KSU_KAZESU_VERSION_FULL := $(KSU_KAZESU_TAG)-$(KSU_KAZESU_VERSION)
+
+# FinaSU
+KSU_FINASU_VERSION := $(shell echo $$(($(KSU_VERSION) + $(KSU_FINASU_OFFSET))))
+KSU_FINASU_TAG := v1.6.3
+KSU_FINASU_VERSION_FULL := $(KSU_FINASU_TAG)-$(KSU_FINASU_VERSION)
+
+# SukiSU
+KSU_SUKISU_VERSION := $(shell echo $$(($(KSU_VERSION) + $(KSU_SUKISU_OFFSET))))
+KSU_SUKISU_TAG := v3.0.0
+KSU_SUKISU_VERSION_FULL := $(KSU_SUKISU_TAG)-$(KSU_SUKISU_VERSION)
 
 ccflags-y += -DKSU_VERSION=$(KSU_VERSION) -DKSU_VERSION_TAG=\"$(KSU_VERSION_TAG)\" \
-             -DKSU_KSUN_VERSION=$(KSU_KSUN_VERSION) -DKSU_KSUN_TAG=\"$(KSU_KSUN_TAG)\" \
-             -DKSU_BKSU_VERSION=$(KSU_BKSU_VERSION) -DKSU_BKSU_TAG=\"$(KSU_BKSU_TAG)\"
+                -DKSU_VERSION_FULL=\"$(KSU_VERSION_FULL)\" \
+                -DKSU_KSUN_VERSION=$(KSU_KSUN_VERSION) -DKSU_KSUN_TAG=\"$(KSU_KSUN_TAG)\" \
+                -DKSU_KSUN_VERSION_FULL=\"$(KSU_KSUN_VERSION_FULL)\" \
+                -DKSU_BKSU_VERSION=$(KSU_BKSU_VERSION) -DKSU_BKSU_TAG=\"$(KSU_BKSU_TAG)\" \
+                -DKSU_BKSU_VERSION_FULL=\"$(KSU_BKSU_VERSION_FULL)\" \
+                -DKSU_KAZESU_VERSION=$(KSU_KAZESU_VERSION) -DKSU_KAZESU_TAG=\"$(KSU_KAZESU_TAG)\" \
+                -DKSU_KAZESU_VERSION_FULL=\"$(KSU_KAZESU_VERSION_FULL)\" \
+                -DKSU_FINASU_VERSION=$(KSU_FINASU_VERSION) -DKSU_FINASU_TAG=\"$(KSU_FINASU_TAG)\" \
+                -DKSU_FINASU_VERSION_FULL=\"$(KSU_FINASU_VERSION_FULL)\" \
+                -DKSU_SUKISU_VERSION=$(KSU_SUKISU_VERSION) -DKSU_SUKISU_TAG=\"$(KSU_SUKISU_TAG)\" \
+                -DKSU_SUKISU_VERSION_FULL=\"$(KSU_SUKISU_VERSION_FULL)\"
 
 $(info -- KernelSU tag: $(KSU_VERSION_TAG))
 $(info -- KernelSU version: $(KSU_VERSION))
+$(info -- KernelSU full version: $(KSU_VERSION_FULL))
 $(info -- KernelSU-Next tag: $(KSU_KSUN_TAG))
 $(info -- KernelSU-Next version: $(KSU_KSUN_VERSION))
+$(info -- KernelSU-Next full version: $(KSU_KSUN_VERSION_FULL))
 $(info -- BakaSU tag: $(KSU_BKSU_TAG))
 $(info -- BakaSU version: $(KSU_BKSU_VERSION))
+$(info -- KAZESU tag: $(KSU_KAZESU_TAG))
+$(info -- KAZESU version: $(KSU_KAZESU_VERSION))
+$(info -- FinaSU tag: $(KSU_FINASU_TAG))
+$(info -- FinaSU version: $(KSU_FINASU_VERSION))
+$(info -- SukiSU tag: $(KSU_SUKISU_TAG))
+$(info -- SukiSU version: $(KSU_SUKISU_VERSION))
 
 ifeq ($(CONFIG_KSU_KPROBES_KSUD),y)
 KSU_HOOK_TYPE := Kprobes
@@ -54,11 +103,6 @@ CFLAGS_ksu.o += -DKSU_PACKAGE_NAME=\"$(KSU_PACKAGE_NAME)\"
 CFLAGS_ksu.o += -DEXPECTED_SIZE=$(KSU_EXPECTED_SIZE)
 CFLAGS_ksu.o += -DEXPECTED_HASH=\"$(KSU_EXPECTED_HASH)\"
 
-ifeq ($(shell grep -q "^struct security_operations selinux_ops" $(srctree)/security/selinux/hooks.c; echo $$?),0)
-$(info -- KernelSU/compat: exported selinux_ops found!)
-CFLAGS_ksu.o += -DKSU_HAS_EXPORTED_SELINUX_OPS
-endif
-
 ifeq ($(shell grep -q " current_sid(void)" $(srctree)/security/selinux/include/objsec.h; echo $$?),0)
 CFLAGS_ksu.o += -DKSU_COMPAT_HAS_CURRENT_SID
 endif
@@ -80,11 +124,6 @@ endif
 # half-assed-backport from 5.1
 ifeq ($(shell grep -q "struct type_datum \*\*type_val_to_struct_array;" $(srctree)/security/selinux/ss/policydb.h; echo $$?),0)
 CFLAGS_ksu.o += -DKSU_TYPE_VAL_TO_STRUCT_ARRAY
-endif
-
-ifeq ($(shell grep -q "^DEFINE_RWLOCK(policy_rwlock);" $(srctree)/security/selinux/ss/services.c; echo $$?),0)
-$(info -- KernelSU/compat: exported policy_rwlock found!)
-CFLAGS_ksu.o += -DKSU_COMPAT_HAS_EXPORTED_POLICY_RWLOCK
 endif
 
 # branch link hook vfs_statx, this newer version uses struct filename

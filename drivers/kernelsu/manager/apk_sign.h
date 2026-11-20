@@ -8,14 +8,19 @@ enum ksu_manager_type {
 	KSU_MANAGER_UNKNOWN = 0,
 	KSU_MANAGER_KSUN,
 	KSU_MANAGER_BKSU,
+	KSU_MANAGER_KAZESU,
+	KSU_MANAGER_FINASU,
+	KSU_MANAGER_SUKISU,
 	KSU_MANAGER_XXSU,
 };
 
 bool is_manager_apk(char *path);
 enum ksu_manager_type ksu_detect_manager_apk(char *path);
 void ksu_set_manager_type(enum ksu_manager_type type);
+enum ksu_manager_type ksu_get_manager_type(void);
 u32 ksu_get_manager_version(void);
 const char *ksu_get_manager_version_tag(void);
+const char *ksu_get_manager_version_full(void);
 int get_pkg_from_apk_dir_path(char *pkg, const char *path);
 int get_pkg_from_apk_path(char *pkg, const char *path);
 

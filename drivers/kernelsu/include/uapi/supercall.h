@@ -27,6 +27,9 @@ struct ksu_become_daemon_cmd {
 #define KSU_GET_INFO_FLAG_PR_BUILD	(1U << 3)
 #define KSU_GET_INFO_FLAG_BUNDLED	(1U << 4)
 #define KSU_GET_INFO_FLAG_PREINIT	(1U << 5)
+#define KSU_GET_INFO_FLAG_HOOK_TRACEPOINT	(1U << 6)
+#define KSU_GET_INFO_FLAG_HOOK_SUSFS_INLINE	(1U << 7)
+#define KSU_GET_INFO_FLAG_HOOK_READY		(1U << 8)
 
 struct ksu_get_info_cmd {
 	__u32 version; /* Output: KERNEL_SU_VERSION */
@@ -139,12 +142,30 @@ struct ksu_get_version_tag_cmd {
 	char tag[32];
 };
 
-struct ksu_hook_type_cmd {
-	char hook_type[32];
-};
+#define KSU_FULL_VERSION_STRING 255
 
 struct ksu_get_full_version_cmd {
-	char version_full[255];
+	char version_full[KSU_FULL_VERSION_STRING];
+};
+
+/* FinaSU uses a 64-byte command 29 variant */
+struct ksu_get_full_version_cmd_legacy {
+	char version_full[64];
+};
+
+struct ksu_manager_entry {
+	__u32 uid;
+	__u8 signature_index;
+} __attribute__((packed));
+
+struct ksu_get_managers_cmd {
+	__u16 count; /* Input / Output: number of managers in array */
+	__u16 total_count; /* Output: total number of managers in requested list */
+	struct ksu_manager_entry managers[]; /* Output: array of active managers */
+} __attribute__((packed));
+
+struct ksu_hook_type_cmd {
+	char hook_type[32];
 };
 
 #define KSU_MARK_GET 1
@@ -218,7 +239,11 @@ struct ksu_lookup_symbols_cmd {
 /*version and hook */
 #define KSU_IOCTL_GET_HOOK_MODE _IOC(_IOC_READ, 'K', 98, 0)
 #define KSU_IOCTL_GET_VERSION_TAG _IOC(_IOC_READ, 'K', 99, 0)
+/* BakaSU/KazeSU/KernelSU-Next downstream ABI */
 #define KSU_IOCTL_GET_FULL_VERSION _IOC(_IOC_READ, 'K', 100, 0)
 #define KSU_IOCTL_HOOK_TYPE _IOC(_IOC_READ, 'K', 101, 0)
+#define KSU_IOCTL_GET_MANAGERS _IOC(_IOC_READ | _IOC_WRITE, 'K', 105, 0)
+/* FinaSU downstream ABI */
+#define KSU_IOCTL_GET_FULL_VERSION_FINASU _IOR('K', 29, struct ksu_get_full_version_cmd_legacy)
 
 #endif
